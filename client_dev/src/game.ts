@@ -1,5 +1,5 @@
 import { Texture, Sprite, Container, TilingSprite, Graphics, TextStyle, Text, NineSliceSprite } from "pixi.js";
-import { initAssets } from "./asset";
+import { initAssets, leftEyeTexture, rightEyeTexture } from "./asset";
 import { setupWebsocket } from "./websocket";
 import { app as PIXIApp } from "./main";
 import { rgbToHex, randomNumber, adjustBrightnessRGB, drawDebugRect, calculateLerp } from "./utils";
@@ -18,6 +18,15 @@ import { HEAD_EYES } from "./constant";
 import { GameState } from "./gameState";
 
 function RandInt(n: number) { return Math.floor(Math.random() * n); }
+
+function brightenColor(baseColor: number[], highlight: number): number[] {
+    const factor = 1 + (highlight * 0.08);
+    return [
+        Math.floor(Math.min(255, Math.max(0, baseColor[0] * factor))),
+        Math.floor(Math.min(255, Math.max(0, baseColor[1] * factor))),
+        Math.floor(Math.min(255, Math.max(0, baseColor[2] * factor)))
+    ];
+}
 
 function CreateCircle(texture: Texture, x: number, y: number, z: number, scale = 1, rot = 0) {
     GameState.gId++;
@@ -156,7 +165,6 @@ export function process() {
     obj.x = calculateLerp(obj.x, obj.tx, GameState.LERPP);
     obj.y = calculateLerp(obj.y, obj.ty, GameState.LERPP);
 
-    // NEW: smooth width/height toward target (kept gentle like your original)
     if (obj.targetWidth !== undefined) {
       obj.width = calculateLerp(obj.width, obj.targetWidth, GameState.LERPP * 0.5);
     }
@@ -164,7 +172,6 @@ export function process() {
       obj.height = calculateLerp(obj.height, obj.targetHeight, GameState.LERPP * 0.5);
     }
 
-    // existing: keep eyes on the head and rotate toward input
     if (obj.EYES !== null) {
       obj.EYES.x = obj.x;
       obj.EYES.y = obj.y;
@@ -172,8 +179,9 @@ export function process() {
 
     obj.onViewUpdate?.();
 
+    const radius = obj.height / 2;
     if (obj.EYES1 !== null) {
-      const rxy = rotate_by_pivot(obj.x, obj.y, obj.rotation, obj.width / 3.5, -obj.width / 5);
+      const rxy = rotate_by_pivot(obj.x, obj.y, obj.rotation, radius * 0.45, -radius * 0.4596);
       obj.EYES1.x = rxy[0];
       obj.EYES1.y = rxy[1];
       if (GameState.INPUT) {
@@ -183,7 +191,7 @@ export function process() {
     }
 
     if (obj.EYES2 !== null) {
-      const lxy = rotate_by_pivot(obj.x, obj.y, obj.rotation, obj.width / 3.5, obj.width / 5);
+      const lxy = rotate_by_pivot(obj.x, obj.y, obj.rotation, radius * 0.45, radius * 0.4596);
       obj.EYES2.x = lxy[0];
       obj.EYES2.y = lxy[1];
       if (GameState.INPUT) {
@@ -198,7 +206,7 @@ export function process() {
       obj.GLOW.y = obj.y;
 
       if (obj.GLOW_ANIMATING) {
-        const glowSpeed = 0.1; // from your original snippet
+        const glowSpeed = 0.1;
         const currentAlpha = obj.GLOW.alpha ?? 0;
         const targetAlpha = obj.GLOW_TARGET_ALPHA ?? 0;
 
@@ -210,6 +218,37 @@ export function process() {
           obj.GLOW.visible = true;
           obj.GLOW.alpha = calculateLerp(currentAlpha, targetAlpha, glowSpeed);
         }
+      }
+
+      // Wave animation for boost effect
+      if (obj.BOOST_ACTIVE && obj.BASE_COLOR && obj.SEGMENT_INDEX !== undefined) {
+        const time = Date.now() / 1000; // Current time in seconds
+        const waveSpeed = 15; // Speed of the wave animation
+        const phaseOffset = 0.8; // Phase offset per segment
+
+        // Calculate sine wave for this segment
+        const highlight = Math.sin(waveSpeed * time - phaseOffset * obj.SEGMENT_INDEX);
+
+        // Brighten the base color based on the wave
+        const brightenedColor = brightenColor(obj.BASE_COLOR, highlight);
+
+        // Validate color values before applying
+        if (brightenedColor.every(c => c >= 0 && c <= 255 && Number.isInteger(c))) {
+          // Apply the animated color to both segment and glow
+          const animatedColor = rgbToHex(brightenedColor[0], brightenedColor[1], brightenedColor[2]);
+          obj.tint = animatedColor;
+
+          // Make glow slightly brighter and more saturated
+          const glowBrightened = brightenColor(brightenedColor, 0.12); // Moderately subtle glow enhancement
+          if (glowBrightened.every(c => c >= 0 && c <= 255 && Number.isInteger(c))) {
+            const glowColor = rgbToHex(glowBrightened[0], glowBrightened[1], glowBrightened[2]);
+            obj.GLOW.tint = glowColor;
+          }
+        }
+
+        // Animate glow alpha with the wave as well
+        const waveAlpha = 0.32 + (highlight + 1) * 0.08; // Range from 0.24 to 0.4 (moderately subtle)
+        obj.GLOW.alpha = calculateLerp(obj.GLOW.alpha, waveAlpha, 0.15);
       }
     }
   }
@@ -435,13 +474,15 @@ function onUpdate(pid: number, data: any){
                   
                   // Set width to distance, height to standard height
                   // This creates a stretched effect between segments
+                  snakeObject.targetWidth = undefined;
+                  snakeObject.targetHeight = undefined;
                   if(prevSegment.isLead) {
-                      snakeObject.targetWidth = width;
-                      snakeObject.targetHeight = height;
+                      snakeObject.width = width;
+                      snakeObject.height = height;
                   } else {
-                      snakeObject.targetWidth = width + dist - (radius / 4);
+                      snakeObject.width = width + dist - (radius / 4);
                       snakeObject.GLOW.width = (width + Math.max(dist, width)) * 2;
-                      snakeObject.targetHeight = height;
+                      snakeObject.height = height;
 
                       // Update anchor based on current width to avoid jarring changes
                       if (snakeObject.width > radius) {
@@ -463,13 +504,14 @@ function onUpdate(pid: number, data: any){
               snakeObject.EYES.rotation = angle;
           }
           if(snakeObject.EYES1 !== null){
-              snakeObject.EYES1.width = width * 1.375;
-              snakeObject.EYES1.height = height * 1.375;
+              snakeObject.EYES1.width = radius * 0.9285;
+              snakeObject.EYES1.height = radius * 0.9285;
+              console.log(snakeObject.EYES1.width, snakeObject.EYES1.height);
               snakeObject.EYES1.rotation = angle;
           }
           if(snakeObject.EYES2 !== null){
-              snakeObject.EYES2.width = width * 1.375;
-              snakeObject.EYES2.height = height * 1.375;
+              snakeObject.EYES2.width = radius * 0.9285;
+              snakeObject.EYES2.height = radius * 0.9285;
               snakeObject.EYES2.rotation = angle;
           }
 
@@ -477,95 +519,56 @@ function onUpdate(pid: number, data: any){
           if(boost === 1){
               snakeObject.GLOW.visible = !isLead;
 
-              // Calculate glow intensity based on position in snake
-              let glowIntensity = 0.5; // default
+              // Calculate segment index for wave animation
+              let segmentIndex = 0;
               if(!isLead) {
-                  // Count total segments for this snake by finding all units with same owner
-                  let ownerId = null;
-                  let segmentPosition = 0;
-                  let totalSegments = 0;
+                  // Count segments from head to this segment
+                  let currentId = id;
+                  let currentUnit = decodeNetworkUnit(data.units[currentId]);
+                  let chainLength = 0;
 
-                  // First, find the owner (head) of this segment
-                  for (let uid in data.units) {
-                      const unit = decodeNetworkUnit(data.units[uid]);
-                      if(unit.isLead === 1) {
-                          // Check if this segment belongs to this head by tracing back
-                          let currentId = id;
-                          let currentUnit = decodeNetworkUnit(data.units[currentId]);
-                          let chainLength = 0;
-
-                          while(currentUnit && currentUnit.prevUnitId !== -1 && chainLength < 100) {
-                              segmentPosition++;
-                              currentId = currentUnit.prevUnitId.toString();
-                              if(data.units[currentId]) {
-                                  currentUnit = decodeNetworkUnit(data.units[currentId]);
-                                  if(currentUnit.isLead === 1) {
-                                      if(currentId === uid) {
-                                          ownerId = uid;
-                                          break;
-                                      }
-                                  }
-                              } else {
-                                  break;
-                              }
-                              chainLength++;
+                  while(currentUnit && currentUnit.prevUnitId !== -1 && chainLength < 100) {
+                      segmentIndex++;
+                      currentId = currentUnit.prevUnitId.toString();
+                      if(data.units[currentId]) {
+                          currentUnit = decodeNetworkUnit(data.units[currentId]);
+                          if(currentUnit.isLead === 1) {
+                              break;
                           }
-
-                          if(ownerId) break;
+                      } else {
+                          break;
                       }
-                  }
-
-                  // Count total segments for this snake
-                  if(ownerId) {
-                      for (let uid in data.units) {
-                          const unit = decodeNetworkUnit(data.units[uid]);
-                          // Check if this unit belongs to the same snake
-                          let currentId = uid;
-                          let currentUnit = unit;
-                          let chainLength = 0;
-
-                          while(currentUnit && currentUnit.prevUnitId !== -1 && chainLength < 100) {
-                              currentId = currentUnit.prevUnitId.toString();
-                              if(data.units[currentId]) {
-                                  currentUnit = decodeNetworkUnit(data.units[currentId]);
-                                  if(currentUnit.isLead === 1 && currentId === ownerId) {
-                                      totalSegments++;
-                                      break;
-                                  }
-                              } else {
-                                  break;
-                              }
-                              chainLength++;
-                          }
-                      }
-                  }
-
-                  // Calculate intensity: more intense towards tail
-                  if(totalSegments > 1) {
-                      const tailIntensity = segmentPosition / Math.max(totalSegments - 1, 1);
-                      glowIntensity = 0.1 + (tailIntensity * 0.7); // Range from 0.1 to 0.8
+                      chainLength++;
                   }
               }
 
-              snakeObject.GLOW_TARGET_ALPHA = glowIntensity;
+              // Store segment index for wave animation
+              snakeObject.SEGMENT_INDEX = segmentIndex;
+              snakeObject.BOOST_ACTIVE = true;
+
+              // Base glow intensity with head-to-tail gradient
+              let baseIntensity;
+              if (isLead) {
+                  baseIntensity = 0; // Disable glow for head
+              } else {
+                  // Gradient from 0.2 (near head) to 0.8 (at tail)
+                  // Higher segmentIndex = further from head = more intense
+                  const intensityGradient = 0.2 + (segmentIndex * 0.04);
+                  baseIntensity = Math.min(0.8, intensityGradient); // Cap at 0.8
+              }
+              snakeObject.GLOW_TARGET_ALPHA = baseIntensity;
               snakeObject.GLOW_ANIMATING = true;
-              // snakeObject.GLOW.width = width * 2;
+
               snakeObject.GLOW.height = height * 3;
               snakeObject.GLOW.rotation = angle;
 
+              // Store base colors for wave animation
               let baseColor = COLORS_RGB[colorIndex];
-              let brightnessValue = brightness;
-              if(brightness === 0){brightnessValue = 10;}
-              if(brightness === 1){brightnessValue = 9;}
-              if(brightness === 2){brightnessValue = 8;}
-              if(brightness === 3){brightnessValue = 7;}
-              if(brightness === 4){brightnessValue = 6;}
-
-              let glowColor = parseInt(adjustBrightnessRGB(baseColor[0], baseColor[1], baseColor[2], brightnessValue * 5 - 50).replace('#', ''), 16);
-              snakeObject.GLOW.tint = glowColor;
-              snakeObject.tint = adjustBrightnessRGB(baseColor[0], baseColor[1], baseColor[2], brightnessValue * 5 - 50);
+              snakeObject.BASE_COLOR = baseColor;
+              snakeObject.COLOR = COLORS[colorIndex];
           }
           if(boost === 0){
+              snakeObject.BOOST_ACTIVE = false;
               snakeObject.GLOW_TARGET_ALPHA = 0;
               snakeObject.GLOW_ANIMATING = true;
               if(snakeObject.tint !== snakeObject.COLOR){snakeObject.tint = snakeObject.COLOR;}
@@ -588,12 +591,8 @@ function onUpdate(pid: number, data: any){
               unitObject = CreateSegment(bodyTexture4, x, y, z, width, height, 1);
               if(id === pid.toString()){
                   unitObject.EYES = null;
-                  unitObject.EYES1 = CreateCircle(eyeTexture, x, y, z + 1, 1);
-                  unitObject.EYES1.width = width * 1.375;
-                  unitObject.EYES1.height = height * 1.375;
-                  unitObject.EYES2 = CreateCircle(eyeTexture, x, y, z + 1, 1);
-                  unitObject.EYES2.width = width * 1.375;
-                  unitObject.EYES2.height = height * 1.375;
+                  unitObject.EYES1 = CreateCircle(leftEyeTexture, x, y, z + 1, 1);
+                  unitObject.EYES2 = CreateCircle(rightEyeTexture, x, y, z + 1, 1);
               }
               else {
                   unitObject.EYES1 = null;
